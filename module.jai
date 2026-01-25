@@ -1,4 +1,47 @@
 #import "Basic";
+#import "Hash_Table";
+#import "Hash";
+
+// this thing has to exist because type info only holds the name of the struct.
+// the name is not a good unique identifier for serialization because structs with different names take more or less space to serialize, bad!
+// this should be automated somehow with templates, like it would see which things we serialize,a dn then only put those in the table.
+// also it should just be built into jai so that we can serialize a type, right now we cannot serialize a type? we can the info just requires modification, that's fine but what's not fine is that we can't go from the serialized value back to the type. This is because right now I see no way of taking type info or something and converting that to Type... sad.
+type_to_id : Table(string, u32);
+
+My_Type_Info :: struct  {
+    type : Type;
+    struct_name : string;
+    type_id : u32;
+};
+
+types : [..] My_Type_Info;
+
+add_type :: (types : *[..] My_Type_Info, type: Type) {
+    ti := cast(*Type_Info_Struct) type;
+    struct_name :string = ti.name; 
+    mti := My_Type_Info.{type, struct_name, get_hash(struct_name)};
+    array_add(types, mti);
+}
+
+get_type :: (type_id: u32) -> Type, bool {
+    for types  {
+        log("comparing: % and %", it.type_id, type_id);
+        if it.type_id == type_id 
+            return it.type, true;
+    }
+
+    return Any, false;
+}
+
+get_type_id :: (type: Type) -> u32, bool {
+    for types  {
+        struct_name := (<< cast(*Type_Info_Struct) type).name;
+        if struct_name == it.struct_name
+            return it.type_id, true;
+    }
+
+    return 0, false;
+}
 
 // this function allows us to make iterating over a type a compile time operation by using it with #run
 for_each_member :: ($T: Type, format: string) -> string {
@@ -128,7 +171,7 @@ deserialize :: (read_ptr: *void, $T: Type) -> result: T, bytes_read: int {
 
 
 size_when_serialized_with_type_first :: (value_or_type: $T) -> total_size: s64 {
-    return size_of(Type) + size_when_serialized(value_or_type);
+    return size_of(u32) + size_when_serialized(value_or_type);
 }
 
 // you might want to do this so that you can read a type from a raw buffer without knowing what type it is
@@ -136,9 +179,9 @@ serialize_with_type_first :: (write_ptr: *void, value: $T) -> bytes_written: int
     // before I would just use *T instead of *type_val, and it would crash
     // this is probably because T is just syntax and not something that existed 
     // in memory, I think...
-    type_val : Type = T;
-    bytes_to_write := size_of(Type);
-    memcpy(write_ptr, cast(*void) *type_val, bytes_to_write);
+    type_id := get_type_id(T);
+    bytes_to_write := size_of(u32);
+    memcpy(write_ptr, cast(*void) *type_id, bytes_to_write);
     write_ptr += bytes_to_write;
 
     bw := serialize(write_ptr, value);
@@ -147,7 +190,8 @@ serialize_with_type_first :: (write_ptr: *void, value: $T) -> bytes_written: int
 }
 
 get_type_out :: (read_ptr: *void) -> Type {
-    type := << (cast(* Type) read_ptr);
+    type_id := << (cast(* u32) read_ptr);
+    type, success := get_type(type_id);
     return type;
 }
 
