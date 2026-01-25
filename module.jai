@@ -38,9 +38,11 @@ size_when_serialized :: (value_or_type: $T) -> total_size: s64 {
     }
 }
 
+
+
+
 serialize :: (write_ptr: *void, value: $T) -> bytes_written: int {
     // log("serialize called | write pos % | type % | size_of(T) %",  write_ptr, T, size_of(T));
-
 
     #if #run type_info(T).type == Type_Info_Tag.STRUCT {
         nbw, bw: int;
@@ -96,6 +98,7 @@ deserialize :: (read_ptr: *void, $T: Type) -> result: T, bytes_read: int {
     }
 
     #if #run type_info(T).type == Type_Info_Tag.ARRAY {
+        // extract the size and then the array
 
         result: T;
         nbr: int;
@@ -121,6 +124,40 @@ deserialize :: (read_ptr: *void, $T: Type) -> result: T, bytes_read: int {
     bytes_read := size_of(T); // probably wrong in future.
     // log("found a value of %", result);
     return result_, bytes_read;
+}
+
+
+size_when_serialized_with_type_first :: (value_or_type: $T) -> total_size: s64 {
+    return size_of(Type) + size_when_serialized(value_or_type);
+}
+
+// you might want to do this so that you can read a type from a raw buffer without knowing what type it is
+serialize_with_type_first :: (write_ptr: *void, value: $T) -> bytes_written: int {
+    // before I would just use *T instead of *type_val, and it would crash
+    // this is probably because T is just syntax and not something that existed 
+    // in memory, I think...
+    type_val : Type = T;
+    bytes_to_write := size_of(Type);
+    memcpy(write_ptr, cast(*void) *type_val, bytes_to_write);
+    write_ptr += bytes_to_write;
+
+    bw := serialize(write_ptr, value);
+
+    return bytes_to_write + bw;
+}
+
+get_type_out :: (read_ptr: *void) -> Type {
+    type := << (cast(* Type) read_ptr);
+    return type;
+}
+
+// NOTE: I'm not using this yet because all my types are auto bakes, and to do this
+// it requires runtime looking up of the type... Also I cannot cast Any to a specific type rn?
+deserialize_with_type_first :: (read_ptr: *void) -> result: Any, bytes_read: int {
+    type := << (cast(* Type) read_ptr);
+    log("deserialized a type of %", type);
+    read_ptr += size_of(Type);
+    return deserialize(read_ptr, type);
 }
 
 // builds the string into the builder
