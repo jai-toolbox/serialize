@@ -16,6 +16,10 @@ My_Type_Info :: struct  {
 
 types : [..] My_Type_Info;
 
+log_types :: (types: *[..] My_Type_Info ) {
+    for << types log("    %", it);
+}
+
 add_type :: (types : *[..] My_Type_Info, type: Type) {
     ti := cast(*Type_Info_Struct) type;
     struct_name :string = ti.name; 
@@ -25,7 +29,6 @@ add_type :: (types : *[..] My_Type_Info, type: Type) {
 
 get_type :: (type_id: u32) -> Type, bool {
     for types  {
-        log("comparing: % and %", it.type_id, type_id);
         if it.type_id == type_id 
             return it.type, true;
     }
@@ -101,6 +104,7 @@ serialize :: (write_ptr: *void, value: $T) -> bytes_written: int {
         // first we need to write the number of elements so that we know when to stop when deserializing
         bw = serialize(write_ptr, value.count);
         write_ptr += bw;
+        nbw += bw;
         for value {
             bw = serialize(write_ptr, it);
             write_ptr += bw;
@@ -127,10 +131,10 @@ get_element_type :: ($T: Type) -> Type {
 
 deserialize :: (read_ptr: *void, $T: Type) -> result: T, bytes_read: int {
 
-    // log("deserialize called | read pos % | type % | size_of(T) %",  read_ptr, T, size_of(T));
+    log("deserialize called | read pos % | type % | size_of(T) %",  read_ptr, T, size_of(T));
     // #if evalutes the boolean at compile time, checking if it's constant, all #run statements are, so this is good.
     #if #run type_info(T).type == Type_Info_Tag.STRUCT {
-        // log("got struct of type: %", T);
+        log("got struct of type: %", T);
         // when you have a struct you never have to update position, think about it
         result: T;
         nbr, br: int;
@@ -143,6 +147,8 @@ deserialize :: (read_ptr: *void, $T: Type) -> result: T, bytes_read: int {
     #if #run type_info(T).type == Type_Info_Tag.ARRAY {
         // extract the size and then the array
 
+        log("doing array");
+
         result: T;
         nbr: int;
 
@@ -150,9 +156,14 @@ deserialize :: (read_ptr: *void, $T: Type) -> result: T, bytes_read: int {
         read_ptr += br;
         nbr += br;
 
+
+        log("it has size: %", count);
+
         for 0..count-1 {
+            log("0");
             res, nbr_inner := deserialize(read_ptr,#run get_element_type(T));
             result[it] = res;
+            log("1");
             read_ptr += nbr_inner;
             nbr += nbr_inner;
         }
@@ -161,7 +172,7 @@ deserialize :: (read_ptr: *void, $T: Type) -> result: T, bytes_read: int {
         return result, nbr;
     }
 
-    // log("got non struct of type %", T);
+    log("got non struct of type %", T);
     // here we read the value out. Note this will not work for dynmic storage types later.
     result_ := << (cast(* T) read_ptr);
     bytes_read := size_of(T); // probably wrong in future.
