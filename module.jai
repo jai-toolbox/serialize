@@ -2,6 +2,8 @@
 #import "Hash_Table";
 #import "Hash";
 
+
+
 // this thing has to exist because type info only holds the name of the struct.
 // the name is not a good unique identifier for serialization because structs with different names take more or less space to serialize, bad!
 // this should be automated somehow with templates, like it would see which things we serialize,a dn then only put those in the table.
@@ -54,10 +56,21 @@ for_each_member :: ($T: Type, format: string) -> string {
     struct_info := cast(*Type_Info_Struct) T;
     assert(struct_info.type == Type_Info_Tag.STRUCT);
 
-    for struct_info.members 
-    {
-        if it.flags & .CONSTANT continue;
-        print_to_builder(*builder, format, it.name);
+    for member, member_index: struct_info.members {
+        if member.flags & .CONSTANT continue;
+        
+        // skip members that share an offset with an earlier member (#place)
+        // otherwise you'd be storing redundant info before we just didn't check this.
+        already_covered := false;
+        for prev_index: 0..member_index-1 {
+            if struct_info.members[prev_index].offset_in_bytes == member.offset_in_bytes {
+                already_covered = true;
+                break;
+            }
+        }
+        if already_covered continue;
+        
+        print_to_builder(*builder, format, member.name);
     }
 
     return builder_to_string(*builder);
@@ -71,19 +84,41 @@ size_when_serialized :: (value_or_type: $T) -> total_size: s64 {
         
     // log("size when serialized called on type %", value_or_type);
     #if #run type_info(T).type == Type_Info_Tag.STRUCT {
+        // log("struct members:");
+        // #insert #run for_each_member(T, "log(\"  - %1\");\n");
         // log("it is a struct");
         total_size := 0;
         #insert #run for_each_member(T, 
         "total_size += size_when_serialized(value_or_type.%1);"
         );
         return total_size;
-    } else {
-        // log("it is not a struct");
-        // if you pass in a Type type, this is where it would all go wrong since the size of a Type != the size of an instance of that type.
-        return size_of(T);
-    }
-}
+    } 
 
+    #if #run type_info(T).type == Type_Info_Tag.ARRAY {
+        // log("it is an array");
+        total_size_bytes := size_of(type_of(value_or_type.count));
+        for value_or_type total_size_bytes += size_when_serialized(it);
+        return total_size_bytes;
+    }
+
+
+
+    // if you pass in a Type type, this is where it would all go wrong since the size of a Type != the size of an instance of that type.
+
+    // otherwise you're not a struct or an array this means that you're not padded in any way and you're not holding pointers to dyn mem, therefore your size is just size_of 
+
+
+    // so when this is not here we get a segfault with something like this:
+    // 13Segmentation fault. The faulty address is 0x0, from 0x2dc78a.
+    // that is occuring from return statement expression.
+    // this might be happening because jai thinks I'm not using T anywhere in the 
+    // function body, but it's not checking the return statement or something
+    // and so that variable gets "factored out", so this line fixes it for now
+    // this is bad and I wish I understood it better, for now this works.
+    t: T;
+
+    return size_of(T);
+}
 
 
 
@@ -131,10 +166,11 @@ get_element_type :: ($T: Type) -> Type {
 
 deserialize :: (read_ptr: *void, $T: Type) -> result: T, bytes_read: int {
 
-    log("deserialize called | read pos % | type % | size_of(T) %",  read_ptr, T, size_of(T));
+    // log("deserialize called | read pos % | type % | size_of(T) %",  read_ptr, T, size_of(T));
+    info := cast(*Type_Info) T;
     // #if evalutes the boolean at compile time, checking if it's constant, all #run statements are, so this is good.
     #if #run type_info(T).type == Type_Info_Tag.STRUCT {
-        log("got struct of type: %", T);
+        // log("got struct of type: %", T);
         // when you have a struct you never have to update position, think about it
         result: T;
         nbr, br: int;
@@ -145,9 +181,10 @@ deserialize :: (read_ptr: *void, $T: Type) -> result: T, bytes_read: int {
     }
 
     #if #run type_info(T).type == Type_Info_Tag.ARRAY {
+        array_info := cast(*Type_Info_Array) info;
         // extract the size and then the array
 
-        log("doing array");
+        // log("doing array");
 
         result: T;
         nbr: int;
@@ -157,22 +194,34 @@ deserialize :: (read_ptr: *void, $T: Type) -> result: T, bytes_read: int {
         nbr += br;
 
 
-        log("it has size: %", count);
+        // log("it has size: %", count);
 
         for 0..count-1 {
-            log("0");
+            // log("iteration %", it);
             res, nbr_inner := deserialize(read_ptr,#run get_element_type(T));
-            result[it] = res;
-            log("1");
+
+            #if #run (cast(*Type_Info_Array) type_info(T)).array_type == .FIXED {
+                // this has to occur because this cannot occur on dynamic arrays right?
+                // unless we reserve, but that's only for dynamic arrays so putting
+                // the if here is fine, also this is a compile time if.
+                result[it] = res;
+            } else {
+                // log("the array is dynamic, array_add");
+                array_add(*result, res);
+            }
             read_ptr += nbr_inner;
             nbr += nbr_inner;
         }
+
+        // log("loop over");
+        
+
         
 
         return result, nbr;
     }
 
-    log("got non struct of type %", T);
+    // log("got non struct of type %", T);
     // here we read the value out. Note this will not work for dynmic storage types later.
     result_ := << (cast(* T) read_ptr);
     bytes_read := size_of(T); // probably wrong in future.
@@ -210,7 +259,7 @@ get_type_out :: (read_ptr: *void) -> Type {
 // it requires runtime looking up of the type... Also I cannot cast Any to a specific type rn?
 deserialize_with_type_first :: (read_ptr: *void) -> result: Any, bytes_read: int {
     type := << (cast(* Type) read_ptr);
-    log("deserialized a type of %", type);
+    // log("deserialized a type of %", type);
     read_ptr += size_of(Type);
     return deserialize(read_ptr, type);
 }
