@@ -48,8 +48,12 @@ get_type_id :: (type: Type) -> u32, bool {
     return 0, false;
 }
 
-// this function allows us to make iterating over a type a compile time operation by using it with #run
-for_each_member :: ($T: Type, format: string) -> string {
+Filter_Mode :: enum {
+    ONLY;
+    EXCEPT;
+}
+
+for_each_member :: ($T: Type, format: string, $filter_names: [] string = .[], $filter_mode: Filter_Mode = .EXCEPT) -> string {
     builder: String_Builder;
     defer free_buffers(*builder);
 
@@ -60,7 +64,6 @@ for_each_member :: ($T: Type, format: string) -> string {
         if member.flags & .CONSTANT continue;
         
         // skip members that share an offset with an earlier member (#place)
-        // otherwise you'd be storing redundant info before we just didn't check this.
         already_covered := false;
         for prev_index: 0..member_index-1 {
             if struct_info.members[prev_index].offset_in_bytes == member.offset_in_bytes {
@@ -69,6 +72,20 @@ for_each_member :: ($T: Type, format: string) -> string {
             }
         }
         if already_covered continue;
+        
+        // Apply filter based on filter_mode
+        if filter_names.count > 0 {
+            name_in_list := false;
+            for filter_name: filter_names {
+                if member.name == filter_name {
+                    name_in_list = true;
+                    break;
+                }
+            }
+            
+            if filter_mode == .ONLY && !name_in_list continue;
+            if filter_mode == .EXCEPT && name_in_list continue;
+        }
         
         print_to_builder(*builder, format, member.name);
     }
@@ -264,13 +281,86 @@ deserialize_with_type_first :: (read_ptr: *void) -> result: Any, bytes_read: int
     return deserialize(read_ptr, type);
 }
 
-// builds the string into the builder
-structure_to_string :: (s: $T, builder: *String_Builder) -> success: bool {
-    #insert #run for_each_member(T, "if !to_string(s.%1, builder) return false;\n" );  // (1)
+Print_Options :: struct {
+    pretty: bool = false;
+    indent_level: int = 0;
+    indent_string: string = "    ";
+}
+
+struct_to_string_pretty :: (s: $T, $filter_names: []string = .[], $filter_mode: Filter_Mode = .EXCEPT, indent_string: string = "    ") -> string, success: bool {
+    result, success := struct_to_string(s, filter_names, filter_mode, .{pretty = true, indent_string = indent_string});
+    return result, success;
+}
+
+to_string :: (to_serialize: $T, builder: *String_Builder, $filter_names: []string = .[], $filter_mode: Filter_Mode = .EXCEPT, options: Print_Options = .{}) -> success: bool {
+    #if #run is_struct(T) {
+        result, success := struct_to_string(to_serialize, filter_names, filter_mode, options);
+        if !success return false;
+        print_to_builder(builder, "%", result);
+    } else #if #run is_array(T) {
+        if to_serialize.count == 0 {
+            print_to_builder(builder, "[]");
+        } else if options.pretty {
+            print_to_builder(builder, "[\n");
+            nested_options := options;
+            nested_options.indent_level += 1;
+            for to_serialize {
+                print_indent(builder, nested_options);
+                if !to_string(it, builder, filter_names, filter_mode, nested_options) return false;
+                if it_index < to_serialize.count - 1 {
+                    print_to_builder(builder, ",\n");
+                } else {
+                    print_to_builder(builder, "\n");
+                }
+            }
+            print_indent(builder, options);
+            print_to_builder(builder, "]");
+        } else {
+            print_to_builder(builder, "[");
+            for to_serialize {
+                if !to_string(it, builder, filter_names, filter_mode, options) return false;
+                if it_index < to_serialize.count - 1 print_to_builder(builder, ", ");
+            }
+            print_to_builder(builder, "]");
+        }
+    } else {
+        print_to_builder(builder, "%", to_serialize);
+    }
     return true;
 }
 
-to_string  :: (to_serialize: $T, builder: *String_Builder) -> success: bool { 
-    print_to_builder(builder, "%-", to_serialize);
-    return true; 
+struct_to_string :: (s: $T, $filter_names: []string = .[], $filter_mode: Filter_Mode = .EXCEPT, options: Print_Options = .{}) -> string, success: bool {
+    builder: String_Builder;
+    defer free_buffers(*builder);
+    
+    if options.pretty {
+        print_to_builder(*builder, "{\n");
+        nested_options := options;
+        nested_options.indent_level += 1;
+        #insert #run for_each_member(T, "print_indent(*builder, nested_options); print_to_builder(*builder, \"%1: \"); if !to_string(s.%1, *builder, filter_names, filter_mode, nested_options) return \"\", false; print_to_builder(*builder, \"\\n\");\n", filter_names, filter_mode);
+        print_indent(*builder, options);
+        print_to_builder(*builder, "}");
+    } else {
+        print_to_builder(*builder, "{ ");
+        #insert #run for_each_member(T, "print_to_builder(*builder, \"%1: \"); if !to_string(s.%1, *builder, filter_names, filter_mode, options) return \"\", false; print_to_builder(*builder, \", \");\n", filter_names, filter_mode);
+        print_to_builder(*builder, "}");
+    }
+    
+    return builder_to_string(*builder), true;
+}
+
+print_indent :: (builder: *String_Builder, options: Print_Options) {
+    for 0..options.indent_level-1 {
+        print_to_builder(builder, "%", options.indent_string);
+    }
+}
+
+is_struct :: ($T: Type) -> bool {
+    info := cast(*Type_Info) T;
+    return info.type == .STRUCT;
+}
+
+is_array :: ($T: Type) -> bool {
+    info := cast(*Type_Info) T;
+    return info.type == .ARRAY;
 }
