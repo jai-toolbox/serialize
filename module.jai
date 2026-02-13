@@ -98,6 +98,11 @@ for_each_member :: ($T: Type, format: string, $filter_names: [] string = .[], $f
 size_when_serialized :: (value_or_type: $T) -> total_size: s64 {
     #if #run type_info(T).type == Type_Info_Tag.TYPE
         log("WARNING: you probably messed up this call, you should be passing in non-Type values.", value_or_type);
+
+    #if T == string {
+        // We store: count (s64) + the raw character bytes
+        return size_of(s64) + value_or_type.count;
+    }
         
     // log("size when serialized called on type %", value_or_type);
     #if #run type_info(T).type == Type_Info_Tag.STRUCT {
@@ -142,7 +147,29 @@ size_when_serialized :: (value_or_type: $T) -> total_size: s64 {
 serialize :: (write_ptr: *void, value: $T) -> bytes_written: int {
     // log("serialize called | write pos % | type % | size_of(T) %",  write_ptr, T, size_of(T));
 
+
+    #if T == string {
+        nbw := 0;
+
+        // write the length first
+        bw := serialize(write_ptr, value.count);
+        write_ptr += bw;
+        nbw += bw;
+
+        // write the raw character data
+        if value.count > 0 {
+            memcpy(write_ptr, value.data, value.count);
+            nbw += value.count;
+        }
+        return nbw;
+    }
+
+
     #if #run type_info(T).type == Type_Info_Tag.STRUCT {
+        // a struct is like a fixed size array that holds different types, so it's a sequence of types. 
+        // a struct says ok put that in memory there and this in memory next to it. During serialization
+        // the same theory holds and we just dump the attributes. We don't have to write the amount of data first
+        // because recurively the nested calls will eventually do this. Structs are the "non-leaf" nodes in serialization.
         nbw, bw: int;
         // log("serializing struct of type: %", T);
         #insert #run for_each_member(T, 
@@ -186,6 +213,25 @@ deserialize :: (read_ptr: *void, $T: Type) -> result: T, bytes_read: int {
     // log("deserialize called | read pos % | type % | size_of(T) %",  read_ptr, T, size_of(T));
     info := cast(*Type_Info) T;
     // #if evalutes the boolean at compile time, checking if it's constant, all #run statements are, so this is good.
+
+
+    #if T == string {
+        nbr := 0;
+        // read the length
+        count, br := deserialize(read_ptr, s64);
+        read_ptr += br;
+        nbr += br;
+        // allocate and copy the character data
+        result: string;
+        result.count = count;
+        if count > 0 {
+            result.data = alloc(count);
+            memcpy(result.data, read_ptr, count);
+            nbr += count;
+        }
+        return result, nbr;
+    }
+
     #if #run type_info(T).type == Type_Info_Tag.STRUCT {
         // log("got struct of type: %", T);
         // when you have a struct you never have to update position, think about it
