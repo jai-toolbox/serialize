@@ -4,7 +4,7 @@ Print_Options :: struct {
     indent_string: string = "    ";
 }
 
-struct_to_string_pretty :: (s: $T, $filter_names: []string = .[], $filter_mode: Filter_Mode = .EXCEPT, indent_string: string = "    ") -> string, success: bool {
+struct_to_string_pretty :: (s: $T, $filter_names: [] string = .[], $filter_mode: Filter_Mode = .EXCEPT, indent_string: string = "    ") -> string, success: bool {
     result, success := struct_to_string(s, filter_names, filter_mode, .{pretty = true, indent_string = indent_string});
     return result, success;
 }
