@@ -10,7 +10,9 @@ struct_to_string_pretty :: (s: $T, $filter_names: [] string = .[], $filter_mode:
 }
 
 to_string :: (to_serialize: $T, builder: *String_Builder, $filter_names: []string = .[], $filter_mode: Filter_Mode = .EXCEPT, options: Print_Options = .{}) -> success: bool {
-    #if #run is_struct(T) {
+    #if T == string {
+        print_to_builder(builder, "\"%\"", to_serialize);
+    } else #if #run is_struct(T) {
         result, success := struct_to_string(to_serialize, filter_names, filter_mode, options);
         if !success return false;
         print_to_builder(builder, "%", result);
@@ -141,9 +143,26 @@ from_string :: (s: string, $T: Type) -> result: T, success: bool, bytes_read: in
     ok: bool;
 
     #if T == string {
-        token, new_pos := parse_value_token(s, pos);
-        result = copy_string(token);
-        return result, true, new_pos;
+        pos = parse_whitespace(s, pos);
+        if pos < s.count && s[pos] == #char "\"" {
+            pos += 1;  // skip opening quote
+            start := pos;
+            while pos < s.count && s[pos] != #char "\"" {
+                pos += 1;
+            }
+            if pos >= s.count return result, false, pos;  // no closing quote
+            result_str: string;
+            result_str.data = s.data + start;
+            result_str.count = pos - start;
+            result = copy_string(result_str);
+            pos += 1;  // skip closing quote
+            return result, true, pos;
+        } else {
+            // fallback: unquoted token for backward compatibility
+            token, new_pos := parse_value_token(s, pos);
+            result = copy_string(token);
+            return result, true, new_pos;
+        }
     }
 
     #if T == int || T == s8 || T == s16 || T == s32 || T == s64 {
