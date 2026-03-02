@@ -1,3 +1,5 @@
+#import "String";
+
 Print_Options :: struct {
     pretty: bool = false;
     indent_level: int = 0;
@@ -241,6 +243,9 @@ DONE
     }
 
     #if #run is_array(T) {
+        _, new_pos := parse_identifier(s, pos);
+        pos = new_pos;
+
         pos, ok = parse_expect(s, pos, #char ".");
         if !ok return result, false, pos;
 
