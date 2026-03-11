@@ -1,11 +1,17 @@
+
+// if print options turn out to just be a compile time thing, which they probably are, then they can swallow the filter stuff.
 Print_Options :: struct {
+    // pretty is dumb here, we should say that explicitly does the newlines
     pretty: bool = false;
     indent_level: int = 0;
     indent_string: string = "    ";
+    dereference_pointers : bool = false;
 }
 
-struct_to_string_pretty :: (s: $T, $filter_names: [] string = .[], $filter_mode: Filter_Mode = .EXCEPT, indent_string: string = "    ") -> string, success: bool {
-    result, success := struct_to_string(s, filter_names, filter_mode, .{pretty = true, indent_string = indent_string});
+struct_to_string_pretty :: (s: $T, $filter_names: [] string = .[], $filter_mode: Filter_Mode = .EXCEPT, options: Print_Options = .{}) -> string, success: bool {
+    pretty_options := options;
+    pretty_options.pretty = true;
+    result, success := struct_to_string(s, filter_names, filter_mode, pretty_options);
     return result, success;
 }
 
@@ -39,6 +45,14 @@ to_string :: (to_serialize: $T, builder: *String_Builder, $filter_names: []strin
                 if it_index < to_serialize.count - 1 print_to_builder(builder, ", ");
             }
             print_to_builder(builder, "]");
+        }
+    } else #if #run is_pointer(T) {
+        if to_serialize == null {
+            print_to_builder(builder, "null");
+        } else if options.dereference_pointers {
+            if !to_string(<<to_serialize, builder, filter_names, filter_mode, options) return false;
+        } else {
+            print_to_builder(builder, "%", to_serialize);
         }
     } else {
         print_to_builder(builder, "%", to_serialize);
@@ -91,6 +105,16 @@ is_struct :: ($T: Type) -> bool {
 is_array :: ($T: Type) -> bool {
     info := cast(*Type_Info) T;
     return info.type == .ARRAY;
+}
+
+is_pointer :: ($T: Type) -> bool {
+    info := cast(*Type_Info) T;
+    return info.type == .POINTER;
+}
+
+get_pointer_element_type :: ($T: Type) -> Type {
+    info := cast(*Type_Info_Pointer) T;
+    return info.pointer_to;
 }
 
 parse_whitespace :: (s: string, pos: int) -> int {

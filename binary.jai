@@ -226,10 +226,10 @@ get_type_out :: (read_ptr: *void) -> Type {
 
 // NOTE: I'm not using this yet because all my types are auto bakes, and to do this
 // it requires runtime looking up of the type... Also I cannot cast Any to a specific type rn?
-deserialize_with_type_first :: (read_ptr: *void) -> result: Any, bytes_read: int {
-    type := << (cast(* Type) read_ptr);
-    // log("deserialized a type of %", type);
-    read_ptr += size_of(Type);
-    return deserialize(read_ptr, type);
-}
+// deserialize_with_type_first :: (read_ptr: *void) -> result: Any, bytes_read: int {
+//     type := << (cast(* Type) read_ptr);
+//     // log("deserialized a type of %", type);
+//     read_ptr += size_of(Type);
+//     return deserialize(read_ptr, type);
+// }
 
