@@ -2,6 +2,16 @@
 #import "Hash_Table";
 #import "Hash";
 
+/*
+
+we don't handle things like 
+
+Apollo_Time :: #type,isa S128;
+
+yet, the key to doing this is resolving it to the actual underlying type somehow lookin in Preload.jai for more details when this matters more.
+
+*/
+
 // this thing has to exist because type info only holds the name of the struct.
 // the name is not a good unique identifier for serialization because structs with different names take more or less space to serialize, bad!
 // this should be automated somehow with templates, like it would see which things we serialize,a dn then only put those in the table.
