@@ -1,9 +1,6 @@
-
-// if print options turn out to just be a compile time thing, which they probably are, then they can swallow the filter stuff.
 #import "String";
 
 Print_Options :: struct {
-    // pretty is dumb here, we should say that explicitly does the newlines
     pretty: bool = false;
     indent_level: int = 0;
     indent_string: string = "    ";
@@ -20,6 +17,40 @@ struct_to_string_pretty :: (s: $T, $filter_names: [] string = .[], $filter_mode:
 to_string :: (to_serialize: $T, builder: *String_Builder, $filter_names: []string = .[], $filter_mode: Filter_Mode = .EXCEPT, options: Print_Options = .{}) -> success: bool {
     #if T == string {
         print_to_builder(builder, "\"%\"", to_serialize);
+    } else #if #run is_hash_table(T) {
+        if to_serialize.count == 0 {
+            print_to_builder(builder, "Table.{}");
+        } else if options.pretty {
+            print_to_builder(builder, "Table.{\n");
+            nested_options := options;
+            nested_options.indent_level += 1;
+            idx := 0;
+            for to_serialize {
+                print_indent(builder, nested_options);
+                if !to_string(it_index, builder, filter_names, filter_mode, nested_options) return false;
+                print_to_builder(builder, ": ");
+                if !to_string(it, builder, filter_names, filter_mode, nested_options) return false;
+                if idx < to_serialize.count - 1 {
+                    print_to_builder(builder, ",\n");
+                } else {
+                    print_to_builder(builder, "\n");
+                }
+                idx += 1;
+            }
+            print_indent(builder, options);
+            print_to_builder(builder, "}");
+        } else {
+            print_to_builder(builder, "Table.{");
+            idx := 0;
+            for to_serialize {
+                if !to_string(it_index, builder, filter_names, filter_mode, options) return false;
+                print_to_builder(builder, ": ");
+                if !to_string(it, builder, filter_names, filter_mode, options) return false;
+                if idx < to_serialize.count - 1 print_to_builder(builder, ", ");
+                idx += 1;
+            }
+            print_to_builder(builder, "}");
+        }
     } else #if #run is_struct(T) {
         result, success := struct_to_string(to_serialize, filter_names, filter_mode, options);
         if !success return false;
@@ -116,9 +147,25 @@ is_pointer :: ($T: Type) -> bool {
     return info.type == .POINTER;
 }
 
+is_hash_table :: ($T: Type) -> bool {
+    info := cast(*Type_Info) T;
+    if info.type != .STRUCT return false;
+    struct_info := cast(*Type_Info_Struct) info;
+    return struct_info.name == "Table";
+}
+
 get_pointer_element_type :: ($T: Type) -> Type {
     info := cast(*Type_Info_Pointer) T;
     return info.pointer_to;
+}
+
+string_element_type_extractor :: (array: [] $T) -> Type {
+    return T;
+}
+
+string_get_element_type :: ($T: Type) -> Type {
+    t: T;
+    return string_element_type_extractor(t);
 }
 
 parse_whitespace :: (s: string, pos: int) -> int {
@@ -138,7 +185,7 @@ parse_expect :: (s: string, pos: int, expected: u8) -> int, bool {
 parse_identifier :: (s: string, pos: int) -> string, int {
     p := parse_whitespace(s, pos);
     start := p;
-    while p < s.count && (s[p] != #char " " && s[p] != #char "=" && s[p] != #char "." && s[p] != #char "{" && s[p] != #char "}" && s[p] != #char "," && s[p] != #char "[" && s[p] != #char "]" && s[p] != #char "\n" && s[p] != #char "\r" && s[p] != #char "\t") {
+    while p < s.count && (s[p] != #char " " && s[p] != #char "=" && s[p] != #char "." && s[p] != #char "{" && s[p] != #char "}" && s[p] != #char "," && s[p] != #char "[" && s[p] != #char "]" && s[p] != #char "\n" && s[p] != #char "\r" && s[p] != #char "\t" && s[p] != #char ":") {
         p += 1;
     }
     result: string;
@@ -220,7 +267,46 @@ from_string :: (s: string, $T: Type) -> result: T, success: bool, bytes_read: in
         return false, false, pos;
     }
 
-    #if #run is_struct(T) {
+    #if #run is_hash_table(T) {
+        // Parse: Table.{key1: value1, key2: value2}
+        ident: string;
+        ident, pos = parse_identifier(s, pos);
+
+        pos, ok = parse_expect(s, pos, #char ".");
+        if !ok return result, false, pos;
+
+        pos, ok = parse_expect(s, pos, #char "{");
+        if !ok return result, false, pos;
+
+        while true {
+            pos = parse_whitespace(s, pos);
+            if pos >= s.count return result, false, pos;
+            if s[pos] == #char "}" { pos += 1; break; }
+            if s[pos] == #char "," { pos += 1; continue; }
+
+            remaining: string;
+            remaining.data = s.data + pos;
+            remaining.count = s.count - pos;
+
+            key, key_ok, key_br := from_string(remaining, T.Key_Type);
+            if !key_ok return result, false, pos;
+            pos += key_br;
+
+            pos, ok = parse_expect(s, pos, #char ":");
+            if !ok return result, false, pos;
+
+            remaining.data = s.data + pos;
+            remaining.count = s.count - pos;
+
+            value, val_ok, val_br := from_string(remaining, T.Value_Type);
+            if !val_ok return result, false, pos;
+            pos += val_br;
+
+            table_add(*result, key, value);
+        }
+
+        return result, true, pos;
+    } else #if #run is_struct(T) {
         _, new_pos := parse_identifier(s, pos);
         pos = new_pos;
 
@@ -286,7 +372,7 @@ DONE
             remaining.data = s.data + pos;
             remaining.count = s.count - pos;
 
-            val, inner_ok, br := from_string(remaining, #run get_element_type(T));
+            val, inner_ok, br := from_string(remaining, #run string_get_element_type(T));
             if !inner_ok return result, false, pos;
             array_add(*result, val);
             pos += br;

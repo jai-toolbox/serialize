@@ -1,4 +1,3 @@
-
 // measured in bytes
 // Note that right now if you were to call this with something which is a Type, then you'll get a bad answer.
 size_when_serialized :: (value_or_type: $T) -> total_size: s64 {
@@ -11,7 +10,15 @@ size_when_serialized :: (value_or_type: $T) -> total_size: s64 {
     }
         
     // log("size when serialized called on type %", value_or_type);
-    #if #run type_info(T).type == Type_Info_Tag.STRUCT {
+    #if #run is_hash_table(T) {
+        // For a hash table we store: count (s64) + each key-value pair
+        total_size : s64 = size_of(s64);
+        for value_or_type {
+            total_size += size_when_serialized(it_index);
+            total_size += size_when_serialized(it);
+        }
+        return total_size;
+    } else #if #run type_info(T).type == Type_Info_Tag.STRUCT {
         // log("struct members:");
         // #insert #run for_each_member(T, "log(\"  - %1\");\n");
         // log("it is a struct");
@@ -71,7 +78,23 @@ serialize :: (write_ptr: *void, value: $T) -> bytes_written: int {
     }
 
 
-    #if #run type_info(T).type == Type_Info_Tag.STRUCT {
+    #if #run is_hash_table(T) {
+        nbw, bw: int;
+        // write the count of entries first
+        bw = serialize(write_ptr, value.count);
+        write_ptr += bw;
+        nbw += bw;
+        // write each key-value pair by iterating only valid entries
+        for value {
+            bw = serialize(write_ptr, it_index);
+            write_ptr += bw;
+            nbw += bw;
+            bw = serialize(write_ptr, it);
+            write_ptr += bw;
+            nbw += bw;
+        }
+        return nbw;
+    } else #if #run type_info(T).type == Type_Info_Tag.STRUCT {
         // a struct is like a fixed size array that holds different types, so it's a sequence of types. 
         // a struct says ok put that in memory there and this in memory next to it. During serialization
         // the same theory holds and we just dump the attributes. We don't have to write the amount of data first
@@ -138,7 +161,29 @@ deserialize :: (read_ptr: *void, $T: Type) -> result: T, bytes_read: int {
         return result, nbr;
     }
 
-    #if #run type_info(T).type == Type_Info_Tag.STRUCT {
+    #if #run is_hash_table(T) {
+        // For hash tables we read the count, then each key-value pair, and insert them
+        result: T;
+        nbr, br: int;
+        // read the count
+        count: int;
+        count, br = deserialize(read_ptr, int);
+        read_ptr += br;
+        nbr += br;
+        // read each key-value pair
+        for 0..count-1 {
+            key: T.Key_Type;
+            value: T.Value_Type;
+            key, br = deserialize(read_ptr, T.Key_Type);
+            read_ptr += br;
+            nbr += br;
+            value, br = deserialize(read_ptr, T.Value_Type);
+            read_ptr += br;
+            nbr += br;
+            table_add(*result, key, value);
+        }
+        return result, nbr;
+    } else #if #run type_info(T).type == Type_Info_Tag.STRUCT {
         // log("got struct of type: %", T);
         // when you have a struct you never have to update position, think about it
         result: T;
@@ -232,4 +277,3 @@ get_type_out :: (read_ptr: *void) -> Type {
 //     read_ptr += size_of(Type);
 //     return deserialize(read_ptr, type);
 // }
-
