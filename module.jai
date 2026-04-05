@@ -12,12 +12,6 @@ yet, the key to doing this is resolving it to the actual underlying type somehow
 
 */
 
-// this thing has to exist because type info only holds the name of the struct.
-// the name is not a good unique identifier for serialization because structs with different names take more or less space to serialize, bad!
-// this should be automated somehow with templates, like it would see which things we serialize,a dn then only put those in the table.
-// also it should just be built into jai so that we can serialize a type, right now we cannot serialize a type? we can the info just requires modification, that's fine but what's not fine is that we can't go from the serialized value back to the type. This is because right now I see no way of taking type info or something and converting that to Type... sad.
-type_to_id : Table(string, u32);
-
 My_Type_Info :: struct  {
     type : Type;
     struct_name : string;
@@ -25,10 +19,6 @@ My_Type_Info :: struct  {
 };
 
 types : [..] My_Type_Info;
-
-log_types :: (types: *[..] My_Type_Info ) {
-    for << types log("    %", it);
-}
 
 add_type :: (types : *[..] My_Type_Info, type: Type) {
     ti := cast(*Type_Info_Struct) type;
@@ -52,7 +42,6 @@ get_type_id :: (type: Type) -> u32, bool {
         if struct_name == it.struct_name
             return it.type_id, true;
     }
-
     return 0, false;
 }
 

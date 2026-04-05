@@ -243,9 +243,26 @@ deserialize :: (read_ptr: *void, $T: Type) -> result: T, bytes_read: int {
     return result_, bytes_read;
 }
 
+// yes it kinda sucks that we have to pass the type as second arg but is it impossible to not do that?
+deserialize_with_type_first :: (read_ptr: *void, $T: Type) -> result: T, bytes_read: int {
+    // skip past the type id
+    read_ptr += size_of(u32);
 
+    result, br := deserialize(read_ptr, T);
+    return result, size_of(u32) + br;
+}
+
+
+// I think that this cannot be value_or_type, it must be value only, no?
 size_when_serialized_with_type_first :: (value_or_type: $T) -> total_size: s64 {
     return size_of(u32) + size_when_serialized(value_or_type);
+}
+
+serialize_with_type_first :: (value : $T) -> data : *void, bytes_written: int {
+    data := alloc(size_when_serialized_with_type_first(value));
+    bytes_written := serialize_with_type_first(data, value);
+    // check something?
+    return data, bytes_written;
 }
 
 // you might want to do this so that you can read a type from a raw buffer without knowing what type it is
