@@ -244,8 +244,9 @@ deserialize :: (read_ptr: *void, $T: Type) -> result: T, bytes_read: int {
 }
 
 // yes it kinda sucks that we have to pass the type as second arg but is it impossible to not do that?
-deserialize_with_type_first :: (read_ptr: *void, $T: Type) -> result: T, bytes_read: int {
-    // skip past the type id
+deserialize_with_type_first :: (read_ptr: *void, $T: Type, allocator := context.allocator) -> result: T, bytes_read: int {
+    push_allocator(allocator);
+
     read_ptr += size_of(u32);
 
     result, br := deserialize(read_ptr, T);
