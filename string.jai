@@ -85,7 +85,7 @@ to_string :: (to_serialize: $T, builder: *String_Builder, $filter_names: []strin
         if to_serialize == null {
             print_to_builder(builder, "null");
         } else if options.dereference_pointers {
-            if !to_string(<<to_serialize, builder, filter_names, filter_mode, options) return false;
+            if !to_string(to_serialize.*, builder, filter_names, filter_mode, options) return false;
         } else {
             print_to_builder(builder, "%", to_serialize);
         }

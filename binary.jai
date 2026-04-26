@@ -237,7 +237,7 @@ deserialize :: (read_ptr: *void, $T: Type) -> result: T, bytes_read: int {
 
     // log("got non struct of type %", T);
     // here we read the value out. Note this will not work for dynmic storage types later.
-    result_ := << (cast(* T) read_ptr);
+    result_ := (cast(* T) read_ptr).*;
     bytes_read := size_of(T); // probably wrong in future.
     // log("found a value of %", result);
     return result_, bytes_read;
@@ -282,7 +282,7 @@ serialize_with_type_first :: (write_ptr: *void, value: $T) -> bytes_written: int
 }
 
 get_type_out :: (read_ptr: *void) -> Type {
-    type_id := << (cast(* u32) read_ptr);
+    type_id := (cast(* u32) read_ptr).*;
     type, success := get_type(type_id);
     return type;
 }
@@ -290,7 +290,7 @@ get_type_out :: (read_ptr: *void) -> Type {
 // NOTE: I'm not using this yet because all my types are auto bakes, and to do this
 // it requires runtime looking up of the type... Also I cannot cast Any to a specific type rn?
 // deserialize_with_type_first :: (read_ptr: *void) -> result: Any, bytes_read: int {
-//     type := << (cast(* Type) read_ptr);
+//     type := (cast(* Type) read_ptr).*;
 //     // log("deserialized a type of %", type);
 //     read_ptr += size_of(Type);
 //     return deserialize(read_ptr, type);

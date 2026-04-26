@@ -38,7 +38,7 @@ get_type :: (type_id: u32) -> Type, bool {
 
 get_type_id :: (type: Type) -> u32, bool {
     for types  {
-        struct_name := (<< cast(*Type_Info_Struct) type).name;
+        struct_name := (cast(*Type_Info_Struct) type).*.name;
         if struct_name == it.struct_name
             return it.type_id, true;
     }
