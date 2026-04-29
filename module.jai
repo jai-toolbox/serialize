@@ -14,16 +14,22 @@ yet, the key to doing this is resolving it to the actual underlying type somehow
 
 My_Type_Info :: struct  {
     type : Type;
-    struct_name : string;
+    name : string;
     type_id : u32;
 };
 
 types : [..] My_Type_Info;
 
+deinit_types :: () {
+    for types {
+        free(it.name);
+    }
+    array_free(types);
+}
+
 add_type :: (types : *[..] My_Type_Info, type: Type) {
-    ti := cast(*Type_Info_Struct) type;
-    struct_name :string = ti.name; 
-    mti := My_Type_Info.{type, struct_name, get_hash(struct_name)};
+    type_name := sprint("%", type);
+    mti := My_Type_Info.{type, type_name, get_hash(type_name)};
     array_add(types, mti);
 }
 
@@ -38,8 +44,8 @@ get_type :: (type_id: u32) -> Type, bool {
 
 get_type_id :: (type: Type) -> u32, bool {
     for types  {
-        struct_name := (cast(*Type_Info_Struct) type).*.name;
-        if struct_name == it.struct_name
+        type_name := tprint("%", type);
+        if type_name == it.name
             return it.type_id, true;
     }
     return 0, false;
