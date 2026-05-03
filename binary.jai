@@ -259,6 +259,7 @@ size_when_serialized_with_type_first :: (value_or_type: $T) -> total_size: s64 {
     return size_of(u32) + size_when_serialized(value_or_type);
 }
 
+// todo maybe if the value is a pointer we should say something about that.
 serialize_with_type_first :: (value : $T) -> data : *void, bytes_written: int {
     data := alloc(size_when_serialized_with_type_first(value));
     bytes_written := serialize_with_type_first(data, value);
