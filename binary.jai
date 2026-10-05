@@ -137,7 +137,22 @@ get_element_type :: ($T: Type) -> Type {
     return element_type_extractor(t);
 }
 
-deserialize :: (read_ptr: *void, $T: Type) -> result: T, bytes_read: int {
+/*
+Deserialization takes longer and longer the more complicated the thing is which you're 
+trying to deserialize. 
+
+Therefore we provide a progress callback so that the progress can be tracked. 
+
+If you put the deserialization in a separate thread you can then report progress back
+to the main thread so you know how far along you are.
+*/
+
+deserialize :: (
+    read_ptr: *void,
+    $T: Type,
+    progress_callback: (user_data: *void) = null,
+    progress_context: *void = null,
+) -> result: T, bytes_read: int {
 
     // log("deserialize called | read pos % | type % | size_of(T) %",  read_ptr, T, size_of(T));
     info := cast(*Type_Info) T;
@@ -147,7 +162,7 @@ deserialize :: (read_ptr: *void, $T: Type) -> result: T, bytes_read: int {
     #if T == string {
         nbr := 0;
         // read the length
-        count, br := deserialize(read_ptr, s64);
+        count, br := deserialize(read_ptr, s64, progress_callback, progress_context);
         read_ptr += br;
         nbr += br;
         // allocate and copy the character data
@@ -167,17 +182,18 @@ deserialize :: (read_ptr: *void, $T: Type) -> result: T, bytes_read: int {
         nbr, br: int;
         // read the count
         count: int;
-        count, br = deserialize(read_ptr, int);
+        count, br = deserialize(read_ptr, int, progress_callback, progress_context);
         read_ptr += br;
         nbr += br;
         // read each key-value pair
         for 0..count-1 {
+            if progress_callback != null && (it & 1023) == 0 progress_callback(progress_context);
             key: T.Key_Type;
             value: T.Value_Type;
-            key, br = deserialize(read_ptr, T.Key_Type);
+            key, br = deserialize(read_ptr, T.Key_Type, progress_callback, progress_context);
             read_ptr += br;
             nbr += br;
-            value, br = deserialize(read_ptr, T.Value_Type);
+            value, br = deserialize(read_ptr, T.Value_Type, progress_callback, progress_context);
             read_ptr += br;
             nbr += br;
             table_add(*result, key, value);
@@ -189,7 +205,7 @@ deserialize :: (read_ptr: *void, $T: Type) -> result: T, bytes_read: int {
         result: T;
         nbr, br: int;
         #insert #run for_each_member(T, 
-        "result.%1, br = deserialize(read_ptr, type_of(T.%1)); read_ptr += br; nbr += br;"
+        "result.%1, br = deserialize(read_ptr, type_of(T.%1), progress_callback, progress_context); read_ptr += br; nbr += br;"
         );
         return result, nbr;
     }
@@ -203,7 +219,7 @@ deserialize :: (read_ptr: *void, $T: Type) -> result: T, bytes_read: int {
         result: T;
         nbr: int;
 
-        count, br := deserialize(read_ptr, int);
+        count, br := deserialize(read_ptr, int, progress_callback, progress_context);
         read_ptr += br;
         nbr += br;
 
@@ -211,8 +227,14 @@ deserialize :: (read_ptr: *void, $T: Type) -> result: T, bytes_read: int {
         // log("it has size: %", count);
 
         for 0..count-1 {
+            if progress_callback != null && (it & 1023) == 0 progress_callback(progress_context);
             // log("iteration %", it);
-            res, nbr_inner := deserialize(read_ptr,#run get_element_type(T));
+            res, nbr_inner := deserialize(
+                read_ptr,
+                #run get_element_type(T),
+                progress_callback,
+                progress_context,
+            );
 
             #if #run (cast(*Type_Info_Array) type_info(T)).array_type == .FIXED {
                 // this has to occur because this cannot occur on dynamic arrays right?
