@@ -106,20 +106,26 @@ struct_to_string :: (s: $T, $filter_names: []string = .[], $filter_mode: Filter_
         print_to_builder(*builder, "%.{\n", struct_name);
         nested_options := options;
         nested_options.indent_level += 1;
-        #insert #run for_each_member(T, 
+        #insert -> string {
+            members := get_struct_members(T, filter_names, filter_mode);
+            defer array_free(members);
+            return format_members(members,
             "print_indent(*builder, nested_options); print_to_builder(*builder, \"%1 = \"); if !to_string(s.%1, *builder, filter_names, filter_mode, nested_options) return \"\", false; print_to_builder(*builder, \",\\n\");\n", 
-            filter_names, filter_mode,
             last_format = "print_indent(*builder, nested_options); print_to_builder(*builder, \"%1 = \"); if !to_string(s.%1, *builder, filter_names, filter_mode, nested_options) return \"\", false; print_to_builder(*builder, \"\\n\");\n"
-        );
+            );
+        };
         print_indent(*builder, options);
         print_to_builder(*builder, "}");
     } else {
         print_to_builder(*builder, "%.{", struct_name);
-        #insert #run for_each_member(T, 
+        #insert -> string {
+            members := get_struct_members(T, filter_names, filter_mode);
+            defer array_free(members);
+            return format_members(members,
             "print_to_builder(*builder, \"%1 = \"); if !to_string(s.%1, *builder, filter_names, filter_mode, options) return \"\", false; print_to_builder(*builder, \", \");\n", 
-            filter_names, filter_mode,
             last_format = "print_to_builder(*builder, \"%1 = \"); if !to_string(s.%1, *builder, filter_names, filter_mode, options) return \"\", false;\n"
-        );
+            );
+        };
         print_to_builder(*builder, "}");
     }
     
@@ -135,6 +141,11 @@ print_indent :: (builder: *String_Builder, options: Print_Options) {
 is_struct :: ($T: Type) -> bool {
     info := cast(*Type_Info) T;
     return info.type == .STRUCT;
+}
+
+is_enum :: ($T: Type) -> bool {
+    info := cast(*Type_Info)T;
+    return info.type == .ENUM;
 }
 
 is_array :: ($T: Type) -> bool {
@@ -157,15 +168,6 @@ is_hash_table :: ($T: Type) -> bool {
 get_pointer_element_type :: ($T: Type) -> Type {
     info := cast(*Type_Info_Pointer) T;
     return info.pointer_to;
-}
-
-string_element_type_extractor :: (array: [] $T) -> Type {
-    return T;
-}
-
-string_get_element_type :: ($T: Type) -> Type {
-    t: T;
-    return string_element_type_extractor(t);
 }
 
 parse_whitespace :: (s: string, pos: int) -> int {
@@ -260,6 +262,37 @@ from_string :: (s: string, $T: Type) -> result: T, success: bool, bytes_read: in
         return result, true, new_pos;
     }
 
+    // Map metadata can contain .CASE, Enum.CASE and flag combinations.
+    // Resolve named values instead of treating enum storage as an integer.
+    #if #run is_enum(T) {
+        info := cast(*Type_Info_Enum)T;
+        flags := (info.enum_type_flags & .FLAGS) != 0;
+        value: u64;
+        while true {
+            pos = parse_whitespace(s,pos);
+            start := pos;
+            while pos<s.count && s[pos]!=#char "|" && s[pos]!=#char "," && s[pos]!=#char "}" && s[pos]!=#char "]" &&
+                  s[pos]!=#char " " && s[pos]!=#char "\t" && s[pos]!=#char "\n" && s[pos]!=#char "\r" pos+=1;
+            name := slice(s,start,pos-start);
+            // A leading dot or an explicit enum qualifier does not change the value.
+            dot := find_index_from_right(name,".");
+            if dot>=0 name=slice(name,dot+1,name.count-dot-1);
+            found:=false;
+            for member,index: info.names {
+                if member!=name continue;
+                value |= cast(u64)info.values[index];
+                found=true;
+                break;
+            }
+            if !found return result,false,pos;
+            pos=parse_whitespace(s,pos);
+            if pos>=s.count || s[pos]!=#char "|" break;
+            if !flags return result,false,pos;
+            pos+=1;
+        }
+        return cast(T)value,true,pos;
+    }
+
     #if T == bool {
         token, new_pos := parse_value_token(s, pos);
         if token == "true" return true, true, new_pos;
@@ -332,7 +365,10 @@ from_string :: (s: string, $T: Type) -> result: T, success: bool, bytes_read: in
             pos = parse_whitespace(s, pos);
 
             parsed_any := false;
-            #insert #run for_each_member(T, #string DONE
+            #insert -> string {
+                members := get_struct_members(T);
+                defer array_free(members);
+                return format_members(members, #string DONE
                 if member_name == "%1" {
                     remaining: string;
                     remaining.data = s.data + pos;
@@ -344,7 +380,8 @@ from_string :: (s: string, $T: Type) -> result: T, success: bool, bytes_read: in
                     parsed_any = true;
                 }
 DONE
-            );
+                );
+            };
 
             if !parsed_any return result, false, pos;
         }
@@ -372,7 +409,7 @@ DONE
             remaining.data = s.data + pos;
             remaining.count = s.count - pos;
 
-            val, inner_ok, br := from_string(remaining, #run string_get_element_type(T));
+            val, inner_ok, br := from_string(remaining, #run get_element_type(T));
             if !inner_ok return result, false, pos;
             array_add(*result, val);
             pos += br;

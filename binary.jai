@@ -1,151 +1,154 @@
-// measured in bytes
-// Note that right now if you were to call this with something which is a Type, then you'll get a bad answer.
-size_when_serialized :: (value_or_type: $T) -> total_size: s64 {
-    #if #run type_info(T).type == Type_Info_Tag.TYPE
-        log("WARNING: you probably messed up this call, you should be passing in non-Type values.", value_or_type);
+// Binary encoding is unchanged: strings and arrays have an int-sized count,
+// hash tables contain a count followed by key/value pairs, and structs contain
+// selected members in declaration order, without native padding.
+//
+// These pointer-based APIs assume a complete, trusted input buffer. They do
+// not validate buffer lengths or provide a portable endian/pointer encoding.
 
-    #if T == string {
-        // We store: count (s64) + the raw character bytes
-        return size_of(s64) + value_or_type.count;
+// A bulk copy is safe only when native storage exactly matches that encoding.
+// Even fixed arrays are not compatible: their encoded count is extra data.
+binary_layout_matches_memory :: (info: *Type_Info) -> bool {
+    if info.runtime_size < 0 return false;
+
+    if info.type == .INTEGER || info.type == .FLOAT || info.type == .BOOL
+        || info.type == .ENUM || info.type == .POINTER || info.type == .PROCEDURE {
+        return true;
     }
-        
-    // log("size when serialized called on type %", value_or_type);
-    #if #run is_hash_table(T) {
-        // For a hash table we store: count (s64) + each key-value pair
-        total_size : s64 = size_of(s64);
-        for value_or_type {
-            total_size += size_when_serialized(it_index);
-            total_size += size_when_serialized(it);
-        }
-        return total_size;
-    } else #if #run type_info(T).type == Type_Info_Tag.STRUCT {
-        // log("struct members:");
-        // #insert #run for_each_member(T, "log(\"  - %1\");\n");
-        // log("it is a struct");
-        total_size := 0;
-        #insert #run for_each_member(T, 
-        "total_size += size_when_serialized(value_or_type.%1);"
-        );
-        return total_size;
-    } 
+    if info.type != .STRUCT return false;
 
-    #if #run type_info(T).type == Type_Info_Tag.ARRAY {
-        // log("it is an array");
-        total_size_bytes := size_of(type_of(value_or_type.count));
-        for value_or_type total_size_bytes += size_when_serialized(it);
-        return total_size_bytes;
+    members := get_struct_members(info);
+    defer array_free(members);
+    offset: s64;
+    for member: members {
+        if member.offset_in_bytes != offset
+            || !binary_layout_matches_memory(member.type) return false;
+        offset += member.type.runtime_size;
     }
-
-
-
-    // if you pass in a Type type, this is where it would all go wrong since the size of a Type != the size of an instance of that type.
-
-    // otherwise you're not a struct or an array this means that you're not padded in any way and you're not holding pointers to dyn mem, therefore your size is just size_of 
-
-
-    // so when this is not here we get a segfault with something like this:
-    // 13Segmentation fault. The faulty address is 0x0, from 0x2dc78a.
-    // that is occuring from return statement expression.
-    // this might be happening because jai thinks I'm not using T anywhere in the 
-    // function body, but it's not checking the return statement or something
-    // and so that variable gets "factored out", so this line fixes it for now
-    // this is bad and I wish I understood it better, for now this works.
-    t: T;
-
-    return size_of(T);
+    return offset == info.runtime_size;
 }
 
-
+size_when_serialized :: (value: $T) -> byte_count: s64 {
+    byte_count: s64;
+    #if T == string {
+        return size_of(int) + value.count;
+    } else #if #run is_hash_table(T) {
+        byte_count = size_of(int);
+        for value {
+            byte_count += size_when_serialized(it_index);
+            byte_count += size_when_serialized(it);
+        }
+        return byte_count;
+    } else #if #run is_array(T) {
+        byte_count = size_of(int);
+        #if #run binary_layout_matches_memory((cast(*Type_Info_Array) type_info(T)).element_type) {
+            return byte_count + value.count * size_of(#run get_element_type(T));
+        } else {
+            for value byte_count += size_when_serialized(it);
+            return byte_count;
+        }
+    } else #if #run binary_layout_matches_memory(type_info(T)) {
+        // Referencing a value of T prevents Jai from factoring this
+        // specialization into a constant and omitting its result storage at
+        // some call sites.
+        compiler_workaround: T;
+        return size_of(T);
+    } else #if #run is_struct(T) {
+        #insert -> string {
+            members := get_struct_members(T);
+            defer array_free(members);
+            return format_members(members,
+                "byte_count += size_when_serialized(value.%1);");
+        };
+        return byte_count;
+    } else {
+        compiler_workaround: T;
+        return size_of(T);
+    }
+}
 
 serialize :: (write_ptr: *void, value: $T) -> bytes_written: int {
-    // log("serialize called | write pos % | type % | size_of(T) %",  write_ptr, T, size_of(T));
-
-
+    bytes_written: int;
     #if T == string {
-        nbw := 0;
-
-        // write the length first
-        bw := serialize(write_ptr, value.count);
-        write_ptr += bw;
-        nbw += bw;
-
-        // write the raw character data
-        if value.count > 0 {
-            memcpy(write_ptr, value.data, value.count);
-            nbw += value.count;
-        }
-        return nbw;
-    }
-
-
-    #if #run is_hash_table(T) {
-        nbw, bw: int;
-        // write the count of entries first
-        bw = serialize(write_ptr, value.count);
-        write_ptr += bw;
-        nbw += bw;
-        // write each key-value pair by iterating only valid entries
+        header_bytes := serialize(write_ptr, value.count);
+        if value.count > 0 memcpy(write_ptr + header_bytes, value.data, value.count);
+        return header_bytes + value.count;
+    } else #if #run is_hash_table(T) {
+        bytes_written = serialize(write_ptr, value.count);
+        write_ptr += bytes_written;
         for value {
-            bw = serialize(write_ptr, it_index);
-            write_ptr += bw;
-            nbw += bw;
-            bw = serialize(write_ptr, it);
-            write_ptr += bw;
-            nbw += bw;
+            key_bytes := serialize(write_ptr, it_index);
+            write_ptr += key_bytes;
+            value_bytes := serialize(write_ptr, it);
+            write_ptr += value_bytes;
+            bytes_written += key_bytes + value_bytes;
         }
-        return nbw;
-    } else #if #run type_info(T).type == Type_Info_Tag.STRUCT {
-        // a struct is like a fixed size array that holds different types, so it's a sequence of types. 
-        // a struct says ok put that in memory there and this in memory next to it. During serialization
-        // the same theory holds and we just dump the attributes. We don't have to write the amount of data first
-        // because recurively the nested calls will eventually do this. Structs are the "non-leaf" nodes in serialization.
-        nbw, bw: int;
-        // log("serializing struct of type: %", T);
-        #insert #run for_each_member(T, 
-            "bw = serialize(write_ptr, value.%1); if bw != 0 { write_ptr += bw; nbw += bw; }"
-        );
-        return nbw;
-    } 
-
-    #if #run type_info(T).type == Type_Info_Tag.ARRAY {
-        nbw, bw: int;
-        // first we need to write the number of elements so that we know when to stop when deserializing
-        bw = serialize(write_ptr, value.count);
-        write_ptr += bw;
-        nbw += bw;
-        for value {
-            bw = serialize(write_ptr, it);
-            write_ptr += bw;
-            nbw += bw;
+        return bytes_written;
+    } else #if #run is_array(T) {
+        bytes_written = serialize(write_ptr, value.count);
+        write_ptr += bytes_written;
+        #if #run binary_layout_matches_memory((cast(*Type_Info_Array) type_info(T)).element_type) {
+            payload_bytes := value.count * size_of(#run get_element_type(T));
+            if payload_bytes > 0 memcpy(write_ptr, value.data, payload_bytes);
+            return bytes_written + payload_bytes;
+        } else {
+            for value {
+                element_bytes := serialize(write_ptr, it);
+                write_ptr += element_bytes;
+                bytes_written += element_bytes;
+            }
+            return bytes_written;
         }
-        return nbw;
+    } else #if #run binary_layout_matches_memory(type_info(T)) {
+        memcpy(write_ptr, *value, size_of(T));
+        return size_of(T);
+    } else #if #run is_struct(T) {
+        member_bytes: int;
+        #insert -> string {
+            members := get_struct_members(T);
+            defer array_free(members);
+            return format_members(members,
+                "member_bytes = serialize(write_ptr, value.%1); write_ptr += member_bytes; bytes_written += member_bytes;");
+        };
+        return bytes_written;
+    } else {
+        memcpy(write_ptr, *value, size_of(T));
+        return size_of(T);
     }
-
-    // log("serializing non-struct type % with value %, going to write % bytes", T, value, size_of(T));
-    bytes_to_write := size_of(T);
-    memcpy(write_ptr, *value, bytes_to_write);
-    // log("returning");
-    return bytes_to_write;
-}
-
-element_type_extractor :: (array: [] $T) -> Type {
-    return T;
 }
 
 get_element_type :: ($T: Type) -> Type {
-    t : T;
-    return element_type_extractor(t);
+    array: T;
+    return array_element_type(array);
 }
 
-/*
-Deserialization takes longer and longer the more complicated the thing is which you're 
-trying to deserialize. 
+array_element_type :: (array: [] $Element) -> Type { return Element; }
 
-Therefore we provide a progress callback so that the progress can be tracked. 
+// Callback cadence remains one notification before every 1024 array elements.
+// Copying in those same chunks keeps progress callbacks useful on large arrays.
+copy_deserialized_array :: (
+    destination: *void,
+    source: *void,
+    count: int,
+    element_size: int,
+    progress_callback: (user_data: *void),
+    progress_context: *void,
+) {
+    if progress_callback == null {
+        if count > 0 && element_size > 0 memcpy(destination, source, count * element_size);
+        return;
+    }
 
-If you put the deserialization in a separate thread you can then report progress back
-to the main thread so you know how far along you are.
-*/
+    offset := 0;
+    while offset < count {
+        progress_callback(progress_context);
+        chunk_count := min(count - offset, 1024);
+        chunk_bytes := chunk_count * element_size;
+        if chunk_bytes > 0 memcpy(destination, source, chunk_bytes);
+        destination += chunk_bytes;
+        source += chunk_bytes;
+        offset += chunk_count;
+    }
+}
 
 deserialize :: (
     read_ptr: *void,
@@ -153,168 +156,109 @@ deserialize :: (
     progress_callback: (user_data: *void) = null,
     progress_context: *void = null,
 ) -> result: T, bytes_read: int {
-
-    // log("deserialize called | read pos % | type % | size_of(T) %",  read_ptr, T, size_of(T));
-    info := cast(*Type_Info) T;
-    // #if evalutes the boolean at compile time, checking if it's constant, all #run statements are, so this is good.
-
-
+    result: T;
+    bytes_read: int;
     #if T == string {
-        nbr := 0;
-        // read the length
-        count, br := deserialize(read_ptr, s64, progress_callback, progress_context);
-        read_ptr += br;
-        nbr += br;
-        // allocate and copy the character data
-        result: string;
+        count, header_bytes := deserialize(read_ptr, int);
+        assert(count >= 0);
         result.count = count;
         if count > 0 {
             result.data = alloc(count);
-            memcpy(result.data, read_ptr, count);
-            nbr += count;
+            memcpy(result.data, read_ptr + header_bytes, count);
         }
-        return result, nbr;
-    }
-
-    #if #run is_hash_table(T) {
-        // For hash tables we read the count, then each key-value pair, and insert them
-        result: T;
-        nbr, br: int;
-        // read the count
-        count: int;
-        count, br = deserialize(read_ptr, int, progress_callback, progress_context);
-        read_ptr += br;
-        nbr += br;
-        // read each key-value pair
-        for 0..count-1 {
-            if progress_callback != null && (it & 1023) == 0 progress_callback(progress_context);
-            key: T.Key_Type;
-            value: T.Value_Type;
-            key, br = deserialize(read_ptr, T.Key_Type, progress_callback, progress_context);
-            read_ptr += br;
-            nbr += br;
-            value, br = deserialize(read_ptr, T.Value_Type, progress_callback, progress_context);
-            read_ptr += br;
-            nbr += br;
+        return result, header_bytes + count;
+    } else #if #run is_hash_table(T) {
+        count, header_bytes := deserialize(read_ptr, int);
+        assert(count >= 0);
+        read_ptr += header_bytes;
+        bytes_read = header_bytes;
+        for index: 0..count-1 {
+            if progress_callback != null && (index & 1023) == 0 progress_callback(progress_context);
+            key, key_bytes := deserialize(read_ptr, T.Key_Type, progress_callback, progress_context);
+            read_ptr += key_bytes;
+            value, value_bytes := deserialize(read_ptr, T.Value_Type, progress_callback, progress_context);
+            read_ptr += value_bytes;
             table_add(*result, key, value);
+            bytes_read += key_bytes + value_bytes;
         }
-        return result, nbr;
-    } else #if #run type_info(T).type == Type_Info_Tag.STRUCT {
-        // log("got struct of type: %", T);
-        // when you have a struct you never have to update position, think about it
-        result: T;
-        nbr, br: int;
-        #insert #run for_each_member(T, 
-        "result.%1, br = deserialize(read_ptr, type_of(T.%1), progress_callback, progress_context); read_ptr += br; nbr += br;"
-        );
-        return result, nbr;
-    }
+        return result, bytes_read;
+    } else #if #run is_array(T) {
+        count, header_bytes := deserialize(read_ptr, int);
+        assert(count >= 0);
+        read_ptr += header_bytes;
+        bytes_read = header_bytes;
+        #if #run (cast(*Type_Info_Array) type_info(T)).array_type == .FIXED {
+            assert(count <= result.count);
+        } else {
+            // Both resizable arrays and views own their deserialized storage.
+            // Every element is overwritten below, so skip default initialization.
+            array_resize(*result, count, initialize = false);
+        }
 
-    #if #run type_info(T).type == Type_Info_Tag.ARRAY {
-        array_info := cast(*Type_Info_Array) info;
-        // extract the size and then the array
-
-        // log("doing array");
-
-        result: T;
-        nbr: int;
-
-        count, br := deserialize(read_ptr, int, progress_callback, progress_context);
-        read_ptr += br;
-        nbr += br;
-
-
-        // log("it has size: %", count);
-
-        for 0..count-1 {
-            if progress_callback != null && (it & 1023) == 0 progress_callback(progress_context);
-            // log("iteration %", it);
-            res, nbr_inner := deserialize(
-                read_ptr,
-                #run get_element_type(T),
-                progress_callback,
-                progress_context,
-            );
-
-            #if #run (cast(*Type_Info_Array) type_info(T)).array_type == .FIXED {
-                // this has to occur because this cannot occur on dynamic arrays right?
-                // unless we reserve, but that's only for dynamic arrays so putting
-                // the if here is fine, also this is a compile time if.
-                result[it] = res;
-            } else {
-                // log("the array is dynamic, array_add");
-                array_add(*result, res);
+        #if #run binary_layout_matches_memory((cast(*Type_Info_Array) type_info(T)).element_type) {
+            element_size := size_of(#run get_element_type(T));
+            copy_deserialized_array(result.data, read_ptr, count, element_size,
+                progress_callback, progress_context);
+            return result, bytes_read + count * element_size;
+        } else {
+            for index: 0..count-1 {
+                if progress_callback != null && (index & 1023) == 0 progress_callback(progress_context);
+                element, element_bytes := deserialize(read_ptr, #run get_element_type(T),
+                    progress_callback, progress_context);
+                result[index] = element;
+                read_ptr += element_bytes;
+                bytes_read += element_bytes;
             }
-            read_ptr += nbr_inner;
-            nbr += nbr_inner;
+            return result, bytes_read;
         }
-
-        // log("loop over");
-        
-
-        
-
-        return result, nbr;
+    } else #if #run binary_layout_matches_memory(type_info(T)) {
+        // A copy also handles unaligned fields in the tightly packed wire data.
+        memcpy(*result, read_ptr, size_of(T));
+        return result, size_of(T);
+    } else #if #run is_struct(T) {
+        member_bytes: int;
+        #insert -> string {
+            members := get_struct_members(T);
+            defer array_free(members);
+            return format_members(members,
+                "result.%1, member_bytes = deserialize(read_ptr, type_of(T.%1), progress_callback, progress_context); read_ptr += member_bytes; bytes_read += member_bytes;");
+        };
+        return result, bytes_read;
+    } else {
+        memcpy(*result, read_ptr, size_of(T));
+        return result, size_of(T);
     }
-
-    // log("got non struct of type %", T);
-    // here we read the value out. Note this will not work for dynmic storage types later.
-    result_ := (cast(* T) read_ptr).*;
-    bytes_read := size_of(T); // probably wrong in future.
-    // log("found a value of %", result);
-    return result_, bytes_read;
 }
 
-// yes it kinda sucks that we have to pass the type as second arg but is it impossible to not do that?
-deserialize_with_type_first :: (read_ptr: *void, $T: Type, allocator := context.allocator) -> result: T, bytes_read: int {
+deserialize_with_type_first :: (
+    read_ptr: *void,
+    $T: Type,
+    allocator := context.allocator,
+) -> result: T, bytes_read: int {
     push_allocator(allocator);
-
-    read_ptr += size_of(u32);
-
-    result, br := deserialize(read_ptr, T);
-    return result, size_of(u32) + br;
+    result, payload_bytes := deserialize(read_ptr + size_of(u32), T);
+    return result, size_of(u32) + payload_bytes;
 }
 
-
-// I think that this cannot be value_or_type, it must be value only, no?
-size_when_serialized_with_type_first :: (value_or_type: $T) -> total_size: s64 {
-    return size_of(u32) + size_when_serialized(value_or_type);
+size_when_serialized_with_type_first :: (value: $T) -> s64 {
+    return size_of(u32) + size_when_serialized(value);
 }
 
-// todo maybe if the value is a pointer we should say something about that.
-serialize_with_type_first :: (value : $T) -> data : *void, bytes_written: int {
+serialize_with_type_first :: (value: $T) -> data: *void, bytes_written: int {
     data := alloc(size_when_serialized_with_type_first(value));
     bytes_written := serialize_with_type_first(data, value);
-    // check something?
     return data, bytes_written;
 }
 
-// you might want to do this so that you can read a type from a raw buffer without knowing what type it is
 serialize_with_type_first :: (write_ptr: *void, value: $T) -> bytes_written: int {
-    // before I would just use *T instead of *type_val, and it would crash
-    // this is probably because T is just syntax and not something that existed 
-    // in memory, I think...
-    type_id := get_type_id(T);
-    bytes_to_write := size_of(u32);
-    memcpy(write_ptr, cast(*void) *type_id, bytes_to_write);
-    write_ptr += bytes_to_write;
-
-    bw := serialize(write_ptr, value);
-
-    return bytes_to_write + bw;
+    type_id, _ := get_type_id(T);
+    header_bytes := serialize(write_ptr, type_id);
+    payload_bytes := serialize(write_ptr + header_bytes, value);
+    return header_bytes + payload_bytes;
 }
 
 get_type_out :: (read_ptr: *void) -> Type {
-    type_id := (cast(* u32) read_ptr).*;
-    type, success := get_type(type_id);
-    return type;
+    type_id, _ := deserialize(read_ptr, u32);
+    registered_type, _ := get_type(type_id);
+    return registered_type;
 }
-
-// NOTE: I'm not using this yet because all my types are auto bakes, and to do this
-// it requires runtime looking up of the type... Also I cannot cast Any to a specific type rn?
-// deserialize_with_type_first :: (read_ptr: *void) -> result: Any, bytes_read: int {
-//     type := (cast(* Type) read_ptr).*;
-//     // log("deserialized a type of %", type);
-//     read_ptr += size_of(Type);
-//     return deserialize(read_ptr, type);
-// }

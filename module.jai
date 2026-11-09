@@ -56,22 +56,24 @@ Filter_Mode :: enum {
     EXCEPT;
 }
 
-for_each_member :: ($T: Type, format: string, $filter_names: [] string = .[], $filter_mode: Filter_Mode = .EXCEPT, last_format: string = "") -> string {
-    builder: String_Builder;
-    defer free_buffers(*builder);
-
-    struct_info := cast(*Type_Info_Struct) T;
-    assert(struct_info.type == Type_Info_Tag.STRUCT);
-
-    // First pass: collect the indices of members we'll actually emit
-    filtered_members: [..] int;
-    defer array_free(filtered_members);
+// Returns an owned array of reflected members; names and type metadata are
+// borrowed from the compiler. The caller releases only the returned array.
+// Accepts either a Type or its reflection pointer.
+get_struct_members :: (
+    struct_type: $T,
+    filter_names: [] string = .[],
+    filter_mode: Filter_Mode = .EXCEPT,
+) -> members: [..] Type_Info_Struct_Member {
+    members: [..] Type_Info_Struct_Member;
+    struct_info := cast(*Type_Info_Struct) struct_type;
+    assert(struct_info.type == .STRUCT);
 
     for member, member_index: struct_info.members {
         if member.flags & .CONSTANT continue;
         
         already_covered := false;
         for prev_index: 0..member_index-1 {
+            // this handles the situation where you have an overlay member.
             if struct_info.members[prev_index].offset_in_bytes == member.offset_in_bytes {
                 already_covered = true;
                 break;
@@ -92,17 +94,24 @@ for_each_member :: ($T: Type, format: string, $filter_names: [] string = .[], $f
             if filter_mode == .EXCEPT && name_in_list continue;
         }
         
-        array_add(*filtered_members, member_index);
+        array_add(*members, member);
     }
 
-    // Second pass: emit, using last_format for the final member if provided
-    for i: 0..filtered_members.count-1 {
-        member_index := filtered_members[i];
-        member := struct_info.members[member_index];
-        
-        is_last := (i == filtered_members.count - 1);
-        
-        if is_last && last_format.count > 0 {
+    return members;
+}
+
+// Formats and concatenates an already selected list. This does not filter
+// members or take ownership of their array. %1 is the member name.
+format_members :: (
+    members: [] Type_Info_Struct_Member,
+    format: string,
+    last_format: string = "",
+) -> string {
+    builder: String_Builder;
+    defer free_buffers(*builder);
+
+    for member, index: members {
+        if index == members.count - 1 && last_format.count > 0 {
             print_to_builder(*builder, last_format, member.name);
         } else {
             print_to_builder(*builder, format, member.name);
